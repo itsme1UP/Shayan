@@ -1,0 +1,39 @@
+import os
+import numpy as np
+from tensorflow.keras.models import load_model
+from utils import preprocess_image
+
+# -------------------------
+# Load trained model
+# -------------------------
+model_path = "melanoma_cnn_model.h5"
+print("Loading model from", model_path)
+model = load_model(model_path)
+print("Model loaded successfully.")
+
+# -------------------------
+# Directory of new images to predict
+# -------------------------
+test_dir = "test_images"  # create a folder with a few sample images
+if not os.path.exists(test_dir):
+    print("Test folder does not exist! Please create", test_dir)
+
+# -------------------------
+# Predict each image
+# -------------------------
+for file in os.listdir(test_dir):
+    file_path = os.path.join(test_dir, file)
+    img = preprocess_image(file_path)
+    if img is None:
+        continue
+
+    # Expand dims to add batch dimension
+    img_batch = np.expand_dims(img, axis=0)
+
+    # Predict
+    pred = model.predict(img_batch)
+    print("Image:", file)
+    print("Prediction probabilities:", pred)
+    label = "Melanoma" if np.argmax(pred) == 0 else "Non-Melanoma"
+    print("Predicted label:", label)
+    print("---------------------------")

@@ -1,0 +1,167 @@
+#include <ros/ros.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <geometry_msgs/Pose.h>
+
+#include <pcl_ros/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/statistical_outlier_removal.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/filters/extract_indices.h>
+#include <pcl/kdtree/kdtree_flann.h>
+#include <visualization_msgs/Marker.h>
+
+class SimplePointCloudProcessor
+{
+public:
+    SimplePointCloudProcessor()
+    {
+        ros::NodeHandle nh;
+
+        // Subscribing to the robot's point cloud topic
+        cloud_sub_ = nh.subscribe("/franka/depth/points", 1, &SimplePointCloudProcessor::cloudCallback, this);
+
+        // Subscribing to target pose from kinematics
+        pose_sub_ = nh.subscribe("/franka/target_pose", 1, &SimplePointCloudProcessor::poseCallback, this);
+
+        // Publisher for RViz visualization of the target point
+        marker_pub_ = nh.advertise<visualization_msgs::Marker>("needle_target_marker", 1);
+
+        target_set_ = false;
+
+        ROS_INFO("Simple PointCloud Processor Initialized");
+    }
+
+    void cloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg)
+    {
+        // Convert ROS message to PCL point cloud
+        pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::fromROSMsg(*cloud_msg, *cloud);
+
+        if (cloud->points.size() == 0)
+        {
+            ROS_WARN("Received empty point cloud!");
+            return;
+        }
+
+        // ------------------------
+        // Step 1: Voxel grid downsampling
+        // ------------------------
+        pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_voxel(new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::VoxelGrid<pcl::PointXYZ> voxel;
+        voxel.setInputCloud(cloud);
+        voxel.setLeafSize(0.005f, 0.005f, 0.005f); // 5mm voxel size
+        voxel.filter(*cloud_voxel);
+
+        // ------------------------
+        // Step 2: Remove outliers
+        // ------------------------
+        pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_clean(new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::StatisticalOutlierRemoval<pcl::PointXYZ> sor;
+        sor.setInputCloud(cloud_voxel);
+        sor.setMeanK(30);
+        sor.setStddevMulThresh(1.5);
+        sor.filter(*cloud_clean);
+
+        // ------------------------
+        // Step 3: Plane segmentation
+        // ------------------------
+        pcl::SACSegmentation<pcl::PointXYZ> seg;
+        pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
+        pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients());
+
+        seg.setOptimizeCoefficients(true);
+        seg.setModelType(pcl::SACMODEL_PLANE);
+        seg.setMethodType(pcl::SAC_RANSAC);
+        seg.setDistanceThreshold(0.005); // 5mm threshold
+        seg.setInputCloud(cloud_clean);
+        seg.segment(*inliers, *coefficients);
+
+        if (inliers->indices.size() == 0)
+        {
+            ROS_WARN("Could not find a plane in point cloud.");
+            return;
+        }
+
+        // Extract the plane points
+        pcl::PointCloud<pcl::PointXYZ>::Ptr plane_cloud(new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::ExtractIndices<pcl::PointXYZ> extract;
+        extract.setInputCloud(cloud_clean);
+        extract.setIndices(inliers);
+        extract.setNegative(false);
+        extract.filter(*plane_cloud);
+
+        if (!target_set_)
+        {
+            ROS_WARN("Target pose not set yet.");
+            return;
+        }
+
+        // ------------------------
+        // Step 4: Find nearest point to target pose
+        // ------------------------
+        pcl::PointXYZ target_point(target_pose_.position.x,
+                                   target_pose_.position.y,
+                                   target_pose_.position.z);
+
+        pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
+        kdtree.setInputCloud(plane_cloud);
+
+        std::vector<int> pointIdxNKNSearch(1);
+        std::vector<float> pointNKNSquaredDistance(1);
+
+        bool found = false;
+        if (kdtree.nearestKSearch(target_point, 1, pointIdxNKNSearch, pointNKNSquaredDistance) > 0)
+        {
+            pcl::PointXYZ closest_point = plane_cloud->points[pointIdxNKNSearch[0]];
+            ROS_INFO("Closest point found: [%.3f, %.3f, %.3f]",
+                     closest_point.x, closest_point.y, closest_point.z);
+            found = true;
+
+            // Publish marker for visualization
+            visualization_msgs::Marker marker;
+            marker.header.frame_id = "franka_link0";
+            marker.header.stamp = ros::Time::now();
+            marker.ns = "needle_target";
+            marker.id = 0;
+            marker.type = visualization_msgs::Marker::SPHERE;
+            marker.action = visualization_msgs::Marker::ADD;
+            marker.pose.position = closest_point.getVector3fMap().cast<double>();
+            marker.scale.x = 0.008;
+            marker.scale.y = 0.008;
+            marker.scale.z = 0.008;
+            marker.color.r = 1.0;
+            marker.color.g = 0.0;
+            marker.color.b = 0.0;
+            marker.color.a = 1.0;
+            marker_pub_.publish(marker);
+        }
+
+        if (!found)
+        {
+            ROS_WARN("No nearest neighbor found, something went wrong.");
+        }
+    }
+
+    void poseCallback(const geometry_msgs::PoseConstPtr& pose_msg)
+    {
+        target_pose_ = *pose_msg;
+        target_set_ = true;
+    }
+
+private:
+    ros::Subscriber cloud_sub_;
+    ros::Subscriber pose_sub_;
+    ros::Publisher marker_pub_;
+
+    geometry_msgs::Pose target_pose_;
+    bool target_set_;
+};
+
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, "franka_pointcloud_node_simple");
+    SimplePointCloudProcessor processor;
+    ros::spin();
+    return 0;
+}

@@ -1,0 +1,77 @@
+import cv2
+import numpy as np
+import glob
+import yaml
+import os
+
+class HololensCalibration:
+    """
+    Beginner-style checkerboard calibration for a Hololens / VR camera.
+    Saves intrinsic and distortion parameters.
+    """
+
+    def __init__(self, checkerboard_size=(7,5), square_size=0.03):
+        self.checkerboard_size = checkerboard_size
+        self.square_size = square_size
+        self.K = None
+        self.D = None
+
+    def prepare_object_points(self):
+        objp = np.zeros((self.checkerboard_size[0]*self.checkerboard_size[1],3), np.float32)
+        objp[:,:2] = np.mgrid[0:self.checkerboard_size[0],
+                              0:self.checkerboard_size[1]].T.reshape(-1,2)
+        objp = objp * self.square_size
+        return objp
+
+    def detect_corners(self, images_path):
+        objpoints = []
+        imgpoints = []
+        images = glob.glob(images_path)
+        print(f"Found {len(images)} images in {images_path}")
+        objp = self.prepare_object_points()
+
+        for fname in images:
+            img = cv2.imread(fname)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            ret, corners = cv2.findChessboardCorners(gray, self.checkerboard_size, None)
+            if ret:
+                print(f"Checkerboard detected in {fname}")
+                objpoints.append(objp)
+                imgpoints.append(corners)
+                cv2.drawChessboardCorners(img, self.checkerboard_size, corners, ret)
+                cv2.imshow('Checkerboard', img)
+                cv2.waitKey(100)
+            else:
+                print(f"Checkerboard NOT detected in {fname}")
+
+        cv2.destroyAllWindows()
+        return objpoints, imgpoints, gray.shape[::-1]
+
+    def calibrate_camera(self, objpoints, imgpoints, image_size):
+        ret, K, D, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, image_size, None, None)
+        if ret:
+            print("Hololens camera calibration successful")
+            print("Intrinsic matrix:\n", K)
+            print("Distortion coefficients:\n", D)
+        else:
+            print("Calibration failed")
+        self.K = K
+        self.D = D
+        return rvecs, tvecs
+
+    def save_parameters(self, file_path='calibration/hololens_params.yaml'):
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        data = {
+            'K': self.K.tolist() if self.K is not None else [],
+            'D': self.D.tolist() if self.D is not None else []
+        }
+        with open(file_path, 'w') as f:
+            yaml.dump(data, f)
+        print("Hololens calibration saved to", file_path)
+
+
+if __name__ == "__main__":
+    calib = HololensCalibration()
+    objpoints, imgpoints, img_size = calib.detect_corners('hololens_images/*.jpg')
+    calib.calibrate_camera(objpoints, imgpoints, img_size)
+    calib.save_parameters()
