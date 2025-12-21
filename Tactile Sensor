@@ -1,0 +1,66 @@
+class TactileTensor:
+    def __init__(self, size_x, size_y):
+        self.size_x = size_x
+        self.size_y = size_y
+        self.tensor = np.zeros((size_x, size_y))
+        self.filtered_tensor = np.zeros_like(self.tensor)
+
+    def reset(self):
+        self.tensor[:] = 0.0
+        self.filtered_tensor[:] = 0.0
+
+    def update_from_force(self, force_vector):
+        magnitude = np.linalg.norm(force_vector)
+
+        cx = self.size_x // 2
+        cy = self.size_y // 2
+
+        for i in range(self.size_x):
+            for j in range(self.size_y):
+                dist = np.sqrt((i - cx)**2 + (j - cy)**2)
+                value = magnitude * np.exp(-0.3 * dist)
+                self.tensor[i, j] = value
+
+    def apply_filter(self):
+        for i in range(self.size_x):
+            for j in range(self.size_y):
+                self.filtered_tensor[i, j] = low_pass_filter(
+                    self.filtered_tensor[i, j],
+                    self.tensor[i, j],
+                    ALPHA
+                )
+
+    def get_output(self):
+        return self.filtered_tensor.copy()
+
+
+
+class TactileCalibrator:
+    def __init__(self):
+        self.force_scale = 1.0
+        self.bias = np.zeros(3)
+
+    def calibrate_bias(self, force_samples):
+        self.bias = np.mean(force_samples, axis=0)
+
+    def calibrate_scale(self, reference_force, measured_force):
+        if measured_force > 1e-6:
+            self.force_scale = reference_force / measured_force
+
+    def compensate_force(self, force):
+        compensated = (force - self.bias) * self.force_scale
+        return compensated
+
+
+class HapticDevice:
+    def __init__(self):
+        self.last_output = None
+
+    def send_tactile_tensor(self, tensor):
+        intensity = np.mean(tensor)
+        intensity = clamp(intensity, 0.0, 1.0)
+        self.last_output = intensity
+
+        # In real system this would stream to hardware
+        print(f"HAPTIC INTENSITY: {intensity:.3f}")
+
